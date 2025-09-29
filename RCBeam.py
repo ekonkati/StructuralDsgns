@@ -283,7 +283,7 @@ st.line_chart({"x":xs,"M (kN·m)":M})
 st.line_chart({"x":xs,"V (kN)":V})
 
     # CSV download
-    summary={
+    summary = {
         "span":[L],"support":[support],
         "mode":[action_mode],
         "Mu_kNm":[Mu_kNm],"Vu_kN":[Vu_kN],"Tu_kNm":[Tu_kNm],"Nu_kN":[Nu_kN],
@@ -291,9 +291,10 @@ st.line_chart({"x":xs,"V (kN)":V})
         "Ld_tension":[Ld_tension],"Ld_comp":[Ld_comp],
         "allowable_L/d":[allowable_L_over_d],"actual_L/d":[actual_L_over_d]
     }
-    df=pd.DataFrame(summary)
-    buf=io.StringIO();df.to_csv(buf,index=False)
-    st.download_button("Download CSV",data=buf.getvalue(),file_name="beam_summary.csv")
+    df = pd.DataFrame(summary)
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    st.download_button("Download CSV", data=buf.getvalue(), file_name="beam_summary.csv"),file_name="beam_summary.csv")
 
 # ---- Cross Section SVG ----
 with tab_section:
