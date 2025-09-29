@@ -147,12 +147,25 @@ with tab_inputs:
         wall_h = st.number_input("Wall height (m)", value=3.0, step=0.1, min_value=0.0)
         wall_density = st.number_input("Masonry density (kN/m³)", value=19.0, step=0.5)
 
+    st.subheader("Action Source")
+    action_mode = st.radio("Use:", ["Derive from loads", "Direct design actions"], index=0, horizontal=True)
+
+    if action_mode == "Direct design actions":
+        st.info("Enter factored design actions (ULS) at the critical section. Signs are ignored; absolute values are used for sizing.")
+        colX,colY = st.columns(2)
+        with colX:
+            Mu_in = st.number_input("Design bending moment Mu (kN·m)", value=120.0, step=5.0, min_value=0.0)
+            Vu_in = st.number_input("Design shear Vu (kN)", value=180.0, step=5.0, min_value=0.0)
+        with colY:
+            Tu_in = st.number_input("Design torsion Tu (kN·m)", value=0.0, step=1.0, min_value=0.0)
+            Nu_in = st.number_input("Design axial N_u (kN) (+compression)", value=0.0, step=5.0)
+
     st.subheader("Bar Defaults")
     colC,colD = st.columns(2)
     with colC:
         t_bar = st.selectbox("Main bar dia default (mm)", [12,16,20,25,28,32], index=1)
     with colD:
-        c_bar = st.selectbox("Compression bar dia (mm)", [12,16,20,25], index=0)
+        c_bar = st.selectbox("Compression bar dia (mm)", [12,16,20,25], index=0)", [12,16,20,25], index=0)
 
 # Compute common values
 mat, sec = Materials(fck,fy), Section(b,D,cover)
@@ -168,10 +181,19 @@ elif support=="Cantilever": kM,kV=1/2,1.0
 else: kM,kV=1/12,0.6
 
 L=span
-Mu_kNm = kM*w_ULS_15*(L**2)
-Vu_kN  = kV*w_ULS_15*L
-if include_eq and eq_coeff>0:
-    Mu_kNm += eq_coeff * w_ULS_12 * (L**2)
+# Determine design actions
+if 'action_mode' in locals() and action_mode == "Direct design actions":
+    Mu_kNm = float(abs(Mu_in))
+    Vu_kN  = float(abs(Vu_in))
+    Tu_kNm = float(abs(Tu_in))
+    Nu_kN  = float(Nu_in)  # compression positive
+else:
+    Mu_kNm = kM*w_ULS_15*(L**2)
+    Vu_kN  = kV*w_ULS_15*L
+    if include_eq and eq_coeff>0:
+        Mu_kNm += eq_coeff * w_ULS_12 * (L**2)
+    Tu_kNm = 0.0
+    Nu_kN  = 0.0
 
 Mu_lim=mu_lim_rect(mat.fck,sec.b,d,mat.fy)
 Ast_req=ast_singly(Mu_kNm,mat.fy,d)
@@ -202,7 +224,9 @@ with tab_rebar:
 # Use provided Ast for shear p_t etc.
 Ast_prov = max(Ast_bottom_span, 1.0)
 
-shear = shear_design(Vu_kN, sec.b, d, mat.fck, mat.fy, Ast_prov)
+# If torsion present, use equivalent shear per IS 456 (advisory): Ve = Vu + 1.6*Tu/b
+Vu_eff_kN = Vu_kN + (1.6*Tu_kNm*1000.0/ sec.b) if Tu_kNm>0 else Vu_kN
+shear = shear_design(Vu_eff_kN, sec.b, d, mat.fck, mat.fy, Ast_prov)
 Ld_tension,_ = ld_required(mat.fck, mat.fy, t_bar)
 Ld_comp,_ = ld_required(mat.fck, mat.fy, c_bar, tension=False)
 
@@ -218,14 +242,20 @@ with tab_results:
     with col1:
         st.metric("Mu (ULS)", f"{Mu_kNm:.1f} kN·m")
         st.metric("Vu (ULS)", f"{Vu_kN:.1f} kN")
-        st.write(f"Self‑wt {self_wt:.2f}, Wall {wall_kNpm:.2f}, Finishes {finishes:.2f}, LL {ll:.2f} kN/m")
+        st.metric("Tu (ULS)", f"{Tu_kNm:.1f} kN·m")
+        st.metric("Nu (ULS)", f"{Nu_kN:.1f} kN")
+        if action_mode == "Derive from loads":
+            st.write(f"Self‑wt {self_wt:.2f}, Wall {wall_kNpm:.2f}, Finishes {finishes:.2f}, LL {ll:.2f} kN/m")
+        else:
+            st.info("Using directly entered design actions.")
     with col2:
         st.metric("d (eff)", f"{d:.0f} mm")
         st.metric("Mu,lim", f"{Mu_lim:.1f} kN·m")
         st.write(f"Ast_req midspan: **{Ast_req:.0f} mm²**, Ast_prov(mid): **{Ast_prov:.0f} mm²**")
         st.write("Bottom midspan OK" if Ast_prov>=Ast_req else "Increase bottom Ast or depth")
 
-    st.subheader("Shear")
+    st.subheader("Shear / Torsion")
+    st.write(f"Using equivalent shear **V_e** = {Vu_eff_kN:.1f} kN (Vu + 1.6·Tu/b).")
     st.write(f"τ_v = {shear['tau_v']:.3f}, τ_c ≈ {shear['tau_c']:.3f}, τ_c,max ≈ {shear['tau_c_max']:.2f}")
     if shear["exceeds_tcmax"]:
         st.error("τ_v > τ_c,max → Increase b/d or fck.")
@@ -245,18 +275,22 @@ with tab_results:
     st.write(f"Basic L/d={base_Ld:.1f}, modifier={mod:.2f} → allowable **{allowable_L_over_d:.1f}**; actual **{actual_L_over_d:.1f}** → {'OK' if actual_L_over_d<=allowable_L_over_d else 'Increase depth/comp steel'}.")
 
     # Diagrams without matplotlib
-    import numpy as np
-    xs = np.linspace(0,L,50)
-    M = [kM*w_ULS_15*(L*x-x*x) if support!="Cantilever" else -0.5*w_ULS_15*(x**2) for x in xs]
-    V = [w_ULS_15*(L/2-x) if support!="Cantilever" else -w_ULS_15*x for x in xs]
-    st.line_chart({"x":xs,"M (kN·m)":M})
-    st.line_chart({"x":xs,"V (kN)":V})
+import numpy as np
+xs = np.linspace(0,L,50)
+M = [kM*w_ULS_15*(L*x-x*x) if (support!="Cantilever" and action_mode=="Derive from loads") else [Mu_kNm*(x/L) for x in xs]][0]
+V = [w_ULS_15*(L/2-x) if (support!="Cantilever" and action_mode=="Derive from loads") else [Vu_kN for _ in xs]][0]
+st.line_chart({"x":xs,"M (kN·m)":M})
+st.line_chart({"x":xs,"V (kN)":V})
 
     # CSV download
-    summary={"span":[L],"support":[support],"Mu":[Mu_kNm],"Vu":[Vu_kN],
-             "Ast_req":[Ast_req],"Ast_prov_mid":[Ast_prov],
-             "Ld_tension":[Ld_tension],"Ld_comp":[Ld_comp],
-             "allowable_L/d":[allowable_L_over_d],"actual_L/d":[actual_L_over_d]}
+    summary={
+        "span":[L],"support":[support],
+        "mode":[action_mode],
+        "Mu_kNm":[Mu_kNm],"Vu_kN":[Vu_kN],"Tu_kNm":[Tu_kNm],"Nu_kN":[Nu_kN],
+        "Ast_req":[Ast_req],"Ast_prov_mid":[Ast_prov],
+        "Ld_tension":[Ld_tension],"Ld_comp":[Ld_comp],
+        "allowable_L/d":[allowable_L_over_d],"actual_L/d":[actual_L_over_d]
+    }
     df=pd.DataFrame(summary)
     buf=io.StringIO();df.to_csv(buf,index=False)
     st.download_button("Download CSV",data=buf.getvalue(),file_name="beam_summary.csv")
