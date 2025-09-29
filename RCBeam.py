@@ -165,7 +165,7 @@ with tab_inputs:
     with colC:
         t_bar = st.selectbox("Main bar dia default (mm)", [12,16,20,25,28,32], index=1)
     with colD:
-        c_bar = st.selectbox("Compression bar dia (mm)", [12,16,20,25], index=0)", [12,16,20,25], index=0)
+        c_bar = st.selectbox("Compression bar dia (mm)", [12,16,20,25], index=0)
 
 # Compute common values
 mat, sec = Materials(fck,fy), Section(b,D,cover)
