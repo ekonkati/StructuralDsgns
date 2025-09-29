@@ -308,3 +308,84 @@ with tab_results:
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     st.download_button("Download CSV", data=buf.getvalue(), file_name="beam_summary.csv")
+# ---- Cross Section SVG (tab) ----
+with tab_section:
+    st.subheader("Cross‑section (schematic)")
+    bs, Ds = float(b), float(D)
+    padding = 30
+    svg_w, svg_h = bs + 2*padding, Ds + 2*padding
+    cc = float(cover)
+    stirrup_x0 = padding + 5
+    stirrup_y0 = padding + 5
+    stirrup_w = bs - 10
+    stirrup_h = Ds - 10
+
+    df_re = st.session_state.rebar_df.copy()
+    bottom = df_re[df_re["position"].str.lower()=="bottom"].groupby("dia_mm")["count"].sum().reset_index()
+    top    = df_re[df_re["position"].str.lower()=="top"].groupby("dia_mm")["count"].sum().reset_index()
+
+    def bars_to_svg(rowset, y_from_top):
+        elems=[]
+        if rowset.empty: return elems
+        total_bars = int(rowset["count"].sum())
+        if total_bars<=0: return elems
+        gap = (stirrup_w - 2*cc) / (max(total_bars-1,1))
+        x = stirrup_x0 + cc
+        y = stirrup_y0 + y_from_top
+        # flatten list of bars by dia
+        bars=[]
+        for _,r in rowset.iterrows():
+            bars += [int(r["dia_mm"]) for _ in range(int(r["count"]))]
+        bars.sort(reverse=True)
+        for i,phi in enumerate(bars):
+            cx = x + i*gap
+            r = phi/2.0
+            elems.append(f'<circle cx="{cx:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="none" stroke="black" stroke-width="1" />')
+        return elems
+
+    bottom_circles = bars_to_svg(bottom, stirrup_h-cc)
+    top_circles    = bars_to_svg(top, cc)
+
+    def leader_text(x,y,text):
+        x2,y2 = x+40,y-20
+        return (f'<line x1="{x}" y1="{y}" x2="{x2}" y2="{y2}" stroke="black" stroke-width="1" />'
+                f'<text x="{x2+4}" y="{y2-4}" font-size="12">{text}</text>')
+
+    leader_elems=[]
+    if not bottom.empty:
+        txt = "+".join([f"{int(r['count'])}‑{int(r['dia_mm'])}" for _,r in bottom.iterrows()]) + " bottom"
+        leader_elems.append(leader_text(stirrup_x0+stirrup_w*0.6, stirrup_y0+stirrup_h-cc, txt))
+    if not top.empty:
+        txt = "+".join([f"{int(r['count'])}‑{int(r['dia_mm'])}" for _,r in top.iterrows()]) + " top"
+        leader_elems.append(leader_text(stirrup_x0+stirrup_w*0.6, stirrup_y0+cc, txt))
+
+    svg = f'''
+    <svg width="{svg_w}" height="{svg_h}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="{padding}" y="{padding}" width="{bs}" height="{Ds}" fill="white" stroke="black" stroke-width="2" />
+      <rect x="{stirrup_x0}" y="{stirrup_y0}" width="{stirrup_w}" height="{stirrup_h}" fill="none" stroke="black" stroke-width="1" />
+      {''.join(bottom_circles)}
+      {''.join(top_circles)}
+      {''.join(leader_elems)}
+      <text x="{padding}" y="{padding-8}" font-size="12">b={int(b)} mm</text>
+      <text x="{padding+bs-80}" y="{padding-8}" font-size="12">D={int(D)} mm</text>
+    </svg>
+    '''
+    st.markdown(svg, unsafe_allow_html=True)
+    st.caption("Schematic only. Bar sizes to scale; spacing schematic. Adjust rebar table to see updates.")
+
+# ---- IS 13920 advisory checks (tab) ----
+with tab_ductile:
+    st.subheader("IS 13920 – Ductile Detailing (Advisory)")
+    if not ductile:
+        st.info("Ductile detailing not selected (toggle in sidebar).")
+    # Confinement length at each end
+    hinge_len_mm = max(2*d, 600)
+    # Maximum hoop spacing in hinge zones
+    phi_main = max(12, int(st.session_state.rebar_df['dia_mm'].max()) if not st.session_state.rebar_df.empty else 12)
+    max_hoop = min(0.25*d, 8*phi_main, 100)
+    st.write(f"Confinement length ≥ **{hinge_len_mm:.0f} mm** at each end.")
+    st.write(f"Hoop spacing in confinement zones ≤ **{max_hoop:.0f} mm** (and ≤ 100 mm). Use 135° hooks with 10d extension.")
+    st.write("Avoid lap splices in hinge regions; if unavoidable, provide closely spaced hoops over splice length.")
+    st.write("Provide crossties (α‑ties) for wider beams; ensure anchorage beyond support face ≥ Ld.")
+    st.warning("Full IS 13920 design shear based on probable moments and joint checks are not automated here; verify in detailed design.")
+
