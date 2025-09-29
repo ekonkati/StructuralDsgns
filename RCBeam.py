@@ -1,7 +1,7 @@
-# Streamlit RCC Beam Designer (IS 456) – Mobile-friendly single file app
+# Streamlit RCC Beam Designer (IS 456) – Mobile‑friendly single file app
 # --------------------------------------------------------------
 # Removed matplotlib dependency to avoid ModuleNotFoundError.
-# Uses Streamlit's built-in charting (line_chart) instead of matplotlib.
+# Uses Streamlit's built‑in charting (line_chart) instead of matplotlib.
 # --------------------------------------------------------------
 
 import math
@@ -10,9 +10,9 @@ import io
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="RCC Beam Designer (IS 456)", layout="centered")
-st.title("RCC Beam Designer – IS 456")
-st.caption("Mobile-friendly Streamlit app. Units: length in m/mm, loads in kN.")
+st.set_page_config(page_title="RCC Beam Designer (IS 456 + IS 13920)", layout="centered")
+st.title("RCC Beam Designer – IS 456 + IS 13920")
+st.caption("Mobile‑friendly Streamlit app. Units: length in m/mm, loads in kN. Now with tabs, ductile detailing checks, rebar table, and cross‑section SVG.")
 
 # ---------- Helpers ----------
 
@@ -106,46 +106,105 @@ def ld_required(fck, fy, bar_dia_mm, deformed=True, tension=True):
     Ld = bar_dia_mm * fy / (4.0 * tau_bd)
     return Ld, tau_bd
 
-# ---------- UI ----------
-with st.sidebar:
-    st.header("Inputs")
-    span = st.number_input("Clear span L (m)", value=6.0, min_value=0.5, step=0.1)
-    support = st.selectbox("End condition", ["Simply Supported","Continuous","Cantilever"], index=0)
-    b = st.number_input("Beam width b (mm)", value=300, step=10)
-    D = st.number_input("Overall depth D (mm)", value=500, step=10)
-    cover = st.number_input("Clear cover (mm)", value=25, step=5)
-    fck = st.selectbox("Concrete grade fck", [20,25,30,35,40], index=2)
-    fy = st.selectbox("Steel grade fy", [415,500], index=1)
-    finishes = st.number_input("Finishes (kN/m)", value=2.0, step=0.1)
-    ll = st.number_input("Live load (kN/m)", value=5.0, step=0.5)
-    t_bar = st.selectbox("Main bar dia (mm)", [12,16,20,25], index=1)
-    c_bar = st.selectbox("Comp bar dia (mm)", [12,16,20,25], index=0)
+# ---------- UI (with TABS) ----------
+# Initialize default rebar table
+if "rebar_df" not in st.session_state:
+    st.session_state.rebar_df = pd.DataFrame([
+        {"id":"B1","position":"bottom","zone":"span","dia_mm":20,"count":2,"continuity":"continuous","start_m":0.0,"end_m":None},
+        {"id":"B2","position":"bottom","zone":"span","dia_mm":16,"count":1,"continuity":"curtailed","start_m":0.2,"end_m":0.8},
+        {"id":"T1","position":"top","zone":"support","dia_mm":16,"count":2,"continuity":"end_zones","start_m":0.0,"end_m":0.25},
+    ])
 
+# Sidebar kept minimal for mobile toggles
+with st.sidebar:
+    st.header("Quick Toggles")
+    use_wall = st.checkbox("Add wall load", value=False)
+    include_eq = st.checkbox("Include E/W coeff", value=False)
+    eq_coeff = st.number_input("Eq. coeff (×wL²)", value=0.0, step=0.05)
+    seismic_zone = st.selectbox("Seismic zone (IS 1893)", ["II","III","IV","V"], index=0)
+    ductile = st.checkbox("Apply IS 13920 checks", value=True)
+
+# Tabs
+tab_inputs, tab_rebar, tab_results, tab_section, tab_ductile = st.tabs([
+    "Inputs","Rebar Layout","Results","Cross‑Section","IS 13920"
+])
+
+with tab_inputs:
+    st.subheader("Geometry & Materials")
+    colA,colB = st.columns(2)
+    with colA:
+        span = st.number_input("Clear span L (m)", value=6.0, min_value=0.5, step=0.1)
+        support = st.selectbox("End condition", ["Simply Supported","Continuous","Cantilever"], index=0)
+        b = st.number_input("Beam width b (mm)", value=300, step=10, min_value=150)
+        D = st.number_input("Overall depth D (mm)", value=500, step=10, min_value=200)
+        cover = st.number_input("Clear cover (mm)", value=25, step=5, min_value=20)
+    with colB:
+        fck = st.selectbox("Concrete fck (N/mm²)", [20,25,30,35,40], index=2)
+        fy = st.selectbox("Steel fy (N/mm²)", [415,500], index=1)
+        finishes = st.number_input("Finishes (kN/m)", value=2.0, step=0.1, min_value=0.0)
+        ll = st.number_input("Live load (kN/m)", value=5.0, step=0.5, min_value=0.0)
+        wall_thk = st.number_input("Wall thk (mm)", value=115, step=115, min_value=0)
+        wall_h = st.number_input("Wall height (m)", value=3.0, step=0.1, min_value=0.0)
+        wall_density = st.number_input("Masonry density (kN/m³)", value=19.0, step=0.5)
+
+    st.subheader("Bar Defaults")
+    colC,colD = st.columns(2)
+    with colC:
+        t_bar = st.selectbox("Main bar dia default (mm)", [12,16,20,25,28,32], index=1)
+    with colD:
+        c_bar = st.selectbox("Compression bar dia (mm)", [12,16,20,25], index=0)
+
+# Compute common values
 mat, sec = Materials(fck,fy), Section(b,D,cover)
 d = sec.d_eff
 self_wt = mat.density * (b/1000.0) * (D/1000.0)
-
-w_DL, w_LL = self_wt + finishes, ll
+wall_kNpm = wall_density * (wall_thk/1000.0) * wall_h if use_wall and wall_thk>0 and wall_h>0 else 0.0
+w_DL, w_LL = self_wt + finishes + wall_kNpm, ll
 w_ULS_15 = 1.5*(w_DL+w_LL)
+w_ULS_12 = 1.2*(w_DL+w_LL)
 
 if support=="Simply Supported": kM,kV=1/8,0.5
 elif support=="Cantilever": kM,kV=1/2,1.0
 else: kM,kV=1/12,0.6
 
 L=span
-Mu_kNm=kM*w_ULS_15*(L**2)
-Vu_kN=kV*w_ULS_15*L
+Mu_kNm = kM*w_ULS_15*(L**2)
+Vu_kN  = kV*w_ULS_15*L
+if include_eq and eq_coeff>0:
+    Mu_kNm += eq_coeff * w_ULS_12 * (L**2)
 
 Mu_lim=mu_lim_rect(mat.fck,sec.b,d,mat.fy)
-need_double=Mu_kNm>Mu_lim
 Ast_req=ast_singly(Mu_kNm,mat.fy,d)
-area_one_bar=math.pi*(t_bar**2)/4.0
-n_bars=max(2,math.ceil(Ast_req/area_one_bar))
-Ast_prov=n_bars*area_one_bar
 
-shear=shear_design(Vu_kN,sec.b,d,mat.fck,mat.fy,Ast_prov)
-Ld_tension,tau_bd=ld_required(mat.fck,mat.fy,t_bar)
-Ld_comp,_=ld_required(mat.fck,mat.fy,c_bar, tension=False)
+# ---- Rebar Table (mix & match) ----
+with tab_rebar:
+    st.write("Define bar groups (rows). Positions: bottom/top/side. Zones: span/support/end_zones. Continuity: continuous/curtailed/end_zones.")
+    edited = st.data_editor(st.session_state.rebar_df, num_rows="dynamic")
+    st.session_state.rebar_df = edited
+
+    # Compute Ast by zone
+    def ast_from_rows(rows, pos_filter, zone_filter=None):
+        sel = rows[rows["position"].str.lower()==pos_filter]
+        if zone_filter:
+            sel = sel[sel["zone"].str.lower().isin(zone_filter)]
+        areas = (math.pi*(sel["dia_mm"]**2)/4.0) * sel["count"]
+        return float(areas.sum())
+
+    Ast_bottom_span = ast_from_rows(edited, "bottom", ["span","all"])
+    Ast_top_support = ast_from_rows(edited, "top", ["support","end_zones","all"])
+    Ast_bottom_support = ast_from_rows(edited, "bottom", ["support","end_zones"])
+
+    st.markdown(f"**Ast provided (bottom @ midspan)**: {Ast_bottom_span:.0f} mm² — **Ast required**: {Ast_req:.0f} mm²")
+    need_more = Ast_bottom_span < Ast_req
+    if need_more:
+        st.warning("Bottom Ast at midspan < required. Increase bars or depth.")
+
+# Use provided Ast for shear p_t etc.
+Ast_prov = max(Ast_bottom_span, 1.0)
+
+shear = shear_design(Vu_kN, sec.b, d, mat.fck, mat.fy, Ast_prov)
+Ld_tension,_ = ld_required(mat.fck, mat.fy, t_bar)
+Ld_comp,_ = ld_required(mat.fck, mat.fy, c_bar, tension=False)
 
 base_Ld=LD_LIMITS[support]
 p_t=100.0*Ast_prov/(sec.b*d)
@@ -153,39 +212,139 @@ mod=clamp(1.0+0.15*(p_t-1.0),0.8,1.3)
 allowable_L_over_d=base_Ld*mod
 actual_L_over_d=(L*1000.0)/d
 
-# ---------- Output ----------
-st.subheader("Summary")
-st.metric("Mu",f"{Mu_kNm:.1f} kNm")
-st.metric("Vu",f"{Vu_kN:.1f} kN")
-st.write(f"Provide {n_bars} × {t_bar} mm bars (Ast={Ast_prov:.0f} mm²)")
+with tab_results:
+    st.subheader("Summary")
+    col1,col2 = st.columns(2)
+    with col1:
+        st.metric("Mu (ULS)", f"{Mu_kNm:.1f} kN·m")
+        st.metric("Vu (ULS)", f"{Vu_kN:.1f} kN")
+        st.write(f"Self‑wt {self_wt:.2f}, Wall {wall_kNpm:.2f}, Finishes {finishes:.2f}, LL {ll:.2f} kN/m")
+    with col2:
+        st.metric("d (eff)", f"{d:.0f} mm")
+        st.metric("Mu,lim", f"{Mu_lim:.1f} kN·m")
+        st.write(f"Ast_req midspan: **{Ast_req:.0f} mm²**, Ast_prov(mid): **{Ast_prov:.0f} mm²**")
+        st.write("Bottom midspan OK" if Ast_prov>=Ast_req else "Increase bottom Ast or depth")
 
-st.subheader("Shear")
-st.write(f"τv={shear['tau_v']:.3f}, τc={shear['tau_c']:.3f}, τcmax={shear['tau_c_max']:.2f}")
-st.write(shear['stirrups'])
+    st.subheader("Shear")
+    st.write(f"τ_v = {shear['tau_v']:.3f}, τ_c ≈ {shear['tau_c']:.3f}, τ_c,max ≈ {shear['tau_c_max']:.2f}")
+    if shear["exceeds_tcmax"]:
+        st.error("τ_v > τ_c,max → Increase b/d or fck.")
+    elif shear["ok_concrete"]:
+        st.success("Concrete can carry shear; provide minimum links.")
+    else:
+        st.warning("Provide shear reinforcement (compute spacing per site preferences).")
+        # quick spacing with user default stirrup dia from table? approximate 8mm 2‑leg
+        phi = 8.0; legs = 2
+        Asv = legs * math.pi * (phi**2) / 4.0
+        Vus_kN = Vu_kN - shear['tau_c'] * sec.b * d / 1e3
+        s_v = (0.87 * mat.fy * Asv * d) / (Vus_kN * 1e3)
+        s_v_final = max(50, min(300, round(s_v/10)*10))
+        st.write(f"Try {int(phi)} mm {legs}-leg @ **{s_v_final} mm c/c** (cap by min{{0.75d, 300}} = {min(0.75*d,300):.0f} mm)")
 
-st.subheader("Development Length")
-st.write(f"Ld tension={Ld_tension:.0f} mm, compression={Ld_comp:.0f} mm")
+    st.subheader("Serviceability (Span/Depth)")
+    st.write(f"Basic L/d={base_Ld:.1f}, modifier={mod:.2f} → allowable **{allowable_L_over_d:.1f}**; actual **{actual_L_over_d:.1f}** → {'OK' if actual_L_over_d<=allowable_L_over_d else 'Increase depth/comp steel'}.")
 
-st.subheader("Serviceability")
-st.write(f"L/d actual={actual_L_over_d:.1f}, allowable={allowable_L_over_d:.1f}")
+    # Diagrams without matplotlib
+    import numpy as np
+    xs = np.linspace(0,L,50)
+    M = [kM*w_ULS_15*(L*x-x*x) if support!="Cantilever" else -0.5*w_ULS_15*(x**2) for x in xs]
+    V = [w_ULS_15*(L/2-x) if support!="Cantilever" else -w_ULS_15*x for x in xs]
+    st.line_chart({"x":xs,"M (kN·m)":M})
+    st.line_chart({"x":xs,"V (kN)":V})
 
-# Use Streamlit chart instead of matplotlib
-st.subheader("Moment & Shear Diagrams")
-import numpy as np
-xs=np.linspace(0,L,50)
-M=[kM*w_ULS_15*(L*x-x*x) if support!="Cantilever" else -0.5*w_ULS_15*(x**2) for x in xs]
-V=[w_ULS_15*(L/2-x) if support!="Cantilever" else -w_ULS_15*x for x in xs]
+    # CSV download
+    summary={"span":[L],"support":[support],"Mu":[Mu_kNm],"Vu":[Vu_kN],
+             "Ast_req":[Ast_req],"Ast_prov_mid":[Ast_prov],
+             "Ld_tension":[Ld_tension],"Ld_comp":[Ld_comp],
+             "allowable_L/d":[allowable_L_over_d],"actual_L/d":[actual_L_over_d]}
+    df=pd.DataFrame(summary)
+    buf=io.StringIO();df.to_csv(buf,index=False)
+    st.download_button("Download CSV",data=buf.getvalue(),file_name="beam_summary.csv")
 
-st.line_chart({"x":xs,"Moment (kNm)":M})
-st.line_chart({"x":xs,"Shear (kN)":V})
+# ---- Cross Section SVG ----
+with tab_section:
+    st.subheader("Cross‑section (schematic)")
+    # Simple SVG generator without external libs
+    bs, Ds = float(b), float(D)
+    padding = 30
+    svg_w, svg_h = bs + 2*padding, Ds + 2*padding
+    # stirrup clear cover assumed = cover
+    cc = float(cover)
+    stirrup_x0 = padding + 5
+    stirrup_y0 = padding + 5
+    stirrup_w = bs - 10
+    stirrup_h = Ds - 10
 
-# CSV download
-summary={"span":[L],"support":[support],"Mu":[Mu_kNm],"Vu":[Vu_kN],
-         "Ast_req":[Ast_req],"Ast_prov":[Ast_prov],"n_bars":[n_bars],
-         "bar_dia":[t_bar],"Ld_tension":[Ld_tension],
-         "allowable_L/d":[allowable_L_over_d],"actual_L/d":[actual_L_over_d]}
-df=pd.DataFrame(summary)
-buf=io.StringIO();df.to_csv(buf,index=False)
-st.download_button("Download CSV",data=buf.getvalue(),file_name="beam_summary.csv")
+    # Place bottom bars: pack per groups
+    df = st.session_state.rebar_df
+    # collect bottom and top bars (aggregate counts by dia)
+    bottom = df[df["position"].str.lower()=="bottom"].groupby("dia_mm")["count"].sum().reset_index()
+    top    = df[df["position"].str.lower()=="top"].groupby("dia_mm")["count"].sum().reset_index()
 
-st.caption("Educational tool per IS 456. Perform full detailing & checks separately.")
+    def bars_to_svg_circles(rowset, y_from_top):
+        elems=[]
+        if rowset.empty: return elems
+        total_bars = int(rowset["count"].sum())
+        if total_bars<=0: return elems
+        # one layer distribution
+        gap = (stirrup_w - 2*cc) / (max(total_bars-1,1))
+        x = stirrup_x0 + cc
+        y = stirrup_y0 + y_from_top
+        # flatten rows
+        bars=[]
+        for _,r in rowset.iterrows():
+            bars += [int(r["dia_mm"]) for _ in range(int(r["count"]))]
+        # sort descending for visibility
+        bars.sort(reverse=True)
+        for i,phi in enumerate(bars):
+            cx = x + i*gap
+            r = phi/2.0
+            elems.append(f'<circle cx="{cx:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="none" stroke="black" stroke-width="1" />')
+        return elems
+
+    bottom_circles = bars_to_svg_circles(bottom, stirrup_h-cc)
+    top_circles    = bars_to_svg_circles(top, cc)
+
+    # Leader texts for groups
+    def leader_text(x,y,text):
+        x2,y2 = x+40,y-20
+        return (f'<line x1="{x}" y1="{y}" x2="{x2}" y2="{y2}" stroke="black" stroke-width="1" />'
+                f'<text x="{x2+4}" y="{y2-4}" font-size="12">{text}</text>')
+
+    leader_elems=[]
+    if not bottom.empty:
+        txt = "+".join([f"{int(r['count'])}‑{int(r['dia_mm'])}" for _,r in bottom.iterrows()]) + " bottom"
+        leader_elems.append(leader_text(stirrup_x0+stirrup_w*0.6, stirrup_y0+stirrup_h-cc, txt))
+    if not top.empty:
+        txt = "+".join([f"{int(r['count'])}‑{int(r['dia_mm'])}" for _,r in top.iterrows()]) + " top"
+        leader_elems.append(leader_text(stirrup_x0+stirrup_w*0.6, stirrup_y0+cc, txt))
+
+    svg = f'''
+    <svg width="{svg_w}" height="{svg_h}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="{padding}" y="{padding}" width="{bs}" height="{Ds}" fill="white" stroke="black" stroke-width="2" />
+      <rect x="{stirrup_x0}" y="{stirrup_y0}" width="{stirrup_w}" height="{stirrup_h}" fill="none" stroke="black" stroke-width="1" />
+      {''.join(bottom_circles)}
+      {''.join(top_circles)}
+      {''.join(leader_elems)}
+      <text x="{padding}" y="{padding-8}" font-size="12">b={int(b)} mm</text>
+      <text x="{padding+bs-80}" y="{padding-8}" font-size="12">D={int(D)} mm</text>
+    </svg>
+    '''
+    st.markdown(svg, unsafe_allow_html=True)
+    st.caption("Schematic only. Circle sizes are proportional to bar dia; exact spacing may differ after detailed arrangement and cover/checks.")
+
+# ---- IS 13920: Ductile detailing checks (advisory) ----
+with tab_ductile:
+    st.subheader("IS 13920 Quick Checks (advisory)")
+    if not ductile:
+        st.info("Ductile detailing not selected.")
+    Lcl = min(L, 12.0)  # cap logical length
+    hinge_len_mm = max(2*d, 600)  # plastic hinge / confinement length (rule of thumb per IS 13920)
+    max_stirrup_spacing = min(0.25*d, 8*max(12, t_bar), 100)  # mm
+    st.write(f"Confinement length at each end ≥ **{hinge_len_mm:.0f} mm**.")
+    st.write(f"Hoop/Link spacing in confinement zones ≤ **{max_stirrup_spacing:.0f} mm**, 135° hooks with 10d extension.")
+    st.write("Lap splices: avoid in plastic hinge zones; if unavoidable, provide closely spaced hoops.")
+    st.write("Provide α‑type crossties for wide beams; ensure bar anchorage beyond support face ≥ Ld.")
+    st.warning("Note: Full IS 13920 design shear (based on probable moments/overstrength) and beam‑column joint checks are not automated here. Use this tab as a checklist and update rebar table accordingly.")
+
+st.caption("This app provides IS 456 computations with IS 13920 advisory checks, a rebar table to mix & match bars (e.g., 2‑20+1‑16 bottom, curtailed/continuous), and an SVG cross‑section for documentation.")
