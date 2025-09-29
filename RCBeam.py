@@ -274,22 +274,35 @@ with tab_results:
     st.subheader("Serviceability (Span/Depth)")
     st.write(f"Basic L/d={base_Ld:.1f}, modifier={mod:.2f} → allowable **{allowable_L_over_d:.1f}**; actual **{actual_L_over_d:.1f}** → {'OK' if actual_L_over_d<=allowable_L_over_d else 'Increase depth/comp steel'}.")
 
-    # Diagrams without matplotlib
-import numpy as np
-xs = np.linspace(0,L,50)
-M = [kM*w_ULS_15*(L*x-x*x) if (support!="Cantilever" and action_mode=="Derive from loads") else [Mu_kNm*(x/L) for x in xs]][0]
-V = [w_ULS_15*(L/2-x) if (support!="Cantilever" and action_mode=="Derive from loads") else [Vu_kN for _ in xs]][0]
-st.line_chart({"x":xs,"M (kN·m)":M})
-st.line_chart({"x":xs,"V (kN)":V})
+    # Diagrams without matplotlib (kept inside Results tab to avoid indentation issues)
+    import numpy as np
+    xs = np.linspace(0, L, 50)
+    if action_mode == "Derive from loads":
+        if support != "Cantilever":
+            M = [kM * w_ULS_15 * (L * x - x * x) for x in xs]
+            V = [w_ULS_15 * (L / 2 - x) for x in xs]
+        else:
+            M = [-0.5 * w_ULS_15 * (x ** 2) for x in xs]
+            V = [-w_ULS_15 * x for x in xs]
+    else:
+        # For directly entered actions, draw a simple representative shape
+        M = [Mu_kNm * (x / L) for x in xs]
+        V = [Vu_kN for _ in xs]
+
+    import pandas as _pd
+    dfM = _pd.DataFrame({"x": xs, "M (kN·m)": M}).set_index("x")
+    dfV = _pd.DataFrame({"x": xs, "V (kN)": V}).set_index("x")
+    st.line_chart(dfM)
+    st.line_chart(dfV)
 
     # CSV download
     summary = {
-        "span":[L],"support":[support],
-        "mode":[action_mode],
-        "Mu_kNm":[Mu_kNm],"Vu_kN":[Vu_kN],"Tu_kNm":[Tu_kNm],"Nu_kN":[Nu_kN],
-        "Ast_req":[Ast_req],"Ast_prov_mid":[Ast_prov],
-        "Ld_tension":[Ld_tension],"Ld_comp":[Ld_comp],
-        "allowable_L/d":[allowable_L_over_d],"actual_L/d":[actual_L_over_d]
+        "span": [L], "support": [support],
+        "mode": [action_mode],
+        "Mu_kNm": [Mu_kNm], "Vu_kN": [Vu_kN], "Tu_kNm": [Tu_kNm], "Nu_kN": [Nu_kN],
+        "Ast_req": [Ast_req], "Ast_prov_mid": [Ast_prov],
+        "Ld_tension": [Ld_tension], "Ld_comp": [Ld_comp],
+        "allowable_L/d": [allowable_L_over_d], "actual_L/d": [actual_L_over_d]
     }
     df = pd.DataFrame(summary)
     buf = io.StringIO()
